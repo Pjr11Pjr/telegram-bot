@@ -1,7 +1,7 @@
 import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 import os
@@ -17,6 +17,19 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Создаем клавиатуру
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text="/find"),
+            KeyboardButton(text="/stop"),
+            KeyboardButton(text="/next")
+        ]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
 
 load_dotenv()
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -45,8 +58,8 @@ async def stop_chat(user_id: int, initiator: bool = True):
 
         logger.info(f"Чат между {user_id} и {partner_id} завершен")
         if initiator:
-            await bot.send_message(user_id, "❌ Чат завершён. Ищем нового собеседника...")
-            await bot.send_message(partner_id, "❌ Собеседник покинул чат. Используйте /find для нового поиска.")
+            await bot.send_message(user_id, "❌ Чат завершён. Ищем нового собеседника...", reply_markup=main_keyboard)
+            await bot.send_message(partner_id, "❌ Собеседник покинул чат. Используйте /find для нового поиска.", reply_markup=main_keyboard)
         return partner_id
     return None
 
@@ -61,14 +74,15 @@ async def start(message: Message):
         "/find - найти собеседника\n"
         "/stop - выйти из чата\n"
         "/next - сменить собеседника\n"
-        "/health - проверка работы бота"
+        "/health - проверка работы бота",
+        reply_markup=main_keyboard
     )
 
 
 @dp.message(Command("health"))
 async def health_check(message: Message):
     """Эндпоинт для проверки работы на Render"""
-    await message.answer("✅ Бот активен и работает")
+    await message.answer("✅ Бот активен и работает", reply_markup=main_keyboard)
     logger.info("Health check выполнен")
 
 
@@ -78,7 +92,7 @@ async def find_partner(message: Message):
     logger.info(f"Пользователь {user_id} ищет собеседника")
 
     if user_id in active_users:
-        await message.reply("⚠️ Вы уже в чате! Используйте /stop чтобы выйти.")
+        await message.reply("⚠️ Вы уже в чате! Используйте /stop чтобы выйти.", reply_markup=main_keyboard)
         return
 
     # Проверяем очередь на наличие партнера
@@ -90,15 +104,15 @@ async def find_partner(message: Message):
             active_users[partner_id] = user_id
 
             logger.info(f"Создан чат между {user_id} и {partner_id}")
-            await bot.send_message(user_id, "✅ Собеседник найден! Общайтесь анонимно.")
-            await bot.send_message(partner_id, "✅ Собеседник найден! Общайтесь анонимно.")
+            await bot.send_message(user_id, "✅ Собеседник найден! Общайтесь анонимно.", reply_markup=main_keyboard)
+            await bot.send_message(partner_id, "✅ Собеседник найден! Общайтесь анонимно.", reply_markup=main_keyboard)
             return
 
     # Если партнера нет, добавляем в очередь
     if user_id not in waiting_users:
         waiting_users.append(user_id)
         logger.info(f"Пользователь {user_id} добавлен в очередь. Размер очереди: {len(waiting_users)}")
-        await message.reply("🔍 Ищем собеседника... Ожидайте.")
+        await message.reply("🔍 Ищем собеседника... Ожидайте.", reply_markup=main_keyboard)
 
 
 @dp.message(Command("stop"))
@@ -106,7 +120,7 @@ async def stop_chat_handler(message: Message):
     user_id = message.from_user.id
     logger.info(f"Пользователь {user_id} хочет выйти из чата")
     await stop_chat(user_id)
-    await message.answer("🗑️ Чат завершён. Для нового общения используйте /find")
+    await message.answer("🗑️ Чат завершён. Для нового общения используйте /find", reply_markup=main_keyboard)
 
 
 @dp.message(Command("next"))
@@ -121,7 +135,7 @@ async def next_partner(message: Message):
     if user_id not in waiting_users:
         waiting_users.append(user_id)
 
-    await message.answer("🔄 Ищем нового собеседника...")
+    await message.answer("🔄 Ищем нового собеседника...", reply_markup=main_keyboard)
     await find_partner(message)
 
 
@@ -137,13 +151,13 @@ async def send_message(message: Message):
     if user_id in active_users:
         partner_id = active_users[user_id]
         try:
-            await bot.send_message(partner_id, f"👤: {text}")
+            await bot.send_message(partner_id, f"👤: {text}", reply_markup=main_keyboard)
             logger.debug(f"Сообщение переслано {user_id} → {partner_id}")
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
             await stop_chat(user_id, initiator=False)
     else:
-        await message.reply("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        await message.reply("❌ Вы не в чате. Используйте /find для поиска собеседника.", reply_markup=main_keyboard)
 
 
 async def main():
