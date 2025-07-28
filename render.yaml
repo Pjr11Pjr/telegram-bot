@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telegram-bot
+    plan: free  # Бесплатный тариф
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: ваш_токен_бота  # Замените на реальный токен
+    healthCheckPath: /health  # Для обхода проверки портов
