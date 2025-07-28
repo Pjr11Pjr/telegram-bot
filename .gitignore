@@ -1,0 +1,23 @@
+# Файлы окружения
+.env
+.venv
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+
+# Логи и системные файлы
+*.log
+*.sqlite
+*.pid
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Временные файлы
+temp/
+tmp/
