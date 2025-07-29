@@ -9,7 +9,8 @@ from aiogram.types import (
     PhotoSize,
     Voice,
     VideoNote,
-    Video
+    Video,
+    CallbackQuery
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -36,12 +37,22 @@ vip_users = set()
 # Регулярное выражение для обнаружения ссылок
 URL_PATTERN = re.compile(r'https?://\S+')
 
-# Словарь для хранения состояний подтверждения
-confirmations = {}
+# Словари для хранения данных
+active_users = {}  # {user_id: {"partner_id": int, "username": str}}
+waiting_users = []  # Очередь ожидания
+user_data_cache = {}  # {user_id: {"username": str, "first_name": str}}
+menu_states = {}  # {user_id: bool} - открыто ли меню у пользователя
+
+
+def get_menu_keyboard():
+    """Клавиатура меню"""
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="📱 Меню"))
+    return builder.as_markup(resize_keyboard=True)
 
 
 def get_main_keyboard():
-    """Клавиатура для основного меню"""
+    """Основная клавиатура"""
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text="/find"))
     builder.add(KeyboardButton(text="/stop"))
@@ -62,16 +73,16 @@ def get_vip_keyboard():
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_confirm_keyboard():
+def get_confirm_keyboard(action: str):
     """Инлайн-клавиатура для подтверждения действий"""
     builder = InlineKeyboardBuilder()
     builder.add(InlineKeyboardButton(
         text="✅ Да",
-        callback_data="confirm_next_yes"
+        callback_data=f"confirm_{action}_yes"
     ))
     builder.add(InlineKeyboardButton(
         text="❌ Нет",
-        callback_data="confirm_next_no"
+        callback_data=f"confirm_{action}_no"
     ))
     return builder.as_markup()
 
@@ -88,11 +99,6 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML")
 )
 dp = Dispatcher()
-
-# Словари для хранения данных
-active_users = {}  # {user_id: {"partner_id": int, "username": str}}
-waiting_users = []  # Очередь ожидания
-user_data_cache = {}  # {user_id: {"username": str, "first_name": str}}
 
 
 async def save_user_info(user):
@@ -122,17 +128,21 @@ async def stop_chat(user_id: int, initiator: bool = True):
         del active_users[user_id]
         del active_users[partner_id]
 
+        # Закрываем меню у обоих пользователей
+        menu_states.pop(user_id, None)
+        menu_states.pop(partner_id, None)
+
         logger.info(f"Чат между {get_user_log_info(user_id)} и {get_user_log_info(partner_id)} завершен")
         if initiator:
             await bot.send_message(
                 user_id,
                 "❌ Чат завершён. Ищем нового собеседника...",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             await bot.send_message(
                 partner_id,
                 "❌ Собеседник покинул чат. Используйте /find для нового поиска.",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
         return partner_id
     return None
@@ -149,9 +159,23 @@ async def start(message: Message):
         "/find - найти собеседника\n"
         "/stop - выйти из чата\n"
         "/next - сменить собеседника\n"
-        "/vip - информация о VIP-статусе",
-        reply_markup=get_main_keyboard()
+        "/vip - информация о VIP-статусе\n\n"
+        "Для открытия меню нажмите кнопку '📱 Меню'",
+        reply_markup=get_menu_keyboard()
     )
+
+
+@dp.message(F.text == "📱 Меню")
+async def show_menu(message: Message):
+    user = message.from_user
+    await save_user_info(user)
+    user_id = user.id
+    menu_states[user_id] = True
+
+    if user_id in vip_users:
+        await message.answer("Меню:", reply_markup=get_vip_keyboard())
+    else:
+        await message.answer("Меню:", reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("vip"))
@@ -210,13 +234,15 @@ async def find_partner(message: Message):
             logger.info(f"Создан чат между {get_user_log_info(user_id)} и {get_user_log_info(partner_id)}")
             await bot.send_message(
                 user_id,
-                "✅ Собеседник найден! Общайтесь анонимно.",
-                reply_markup=get_main_keyboard()
+                "✅ Собеседник найден! Общайтесь анонимно.\n"
+                "Для открытия меню нажмите кнопку '📱 Меню'",
+                reply_markup=get_menu_keyboard()
             )
             await bot.send_message(
                 partner_id,
-                "✅ Собеседник найден! Общайтесь анонимно.",
-                reply_markup=get_main_keyboard()
+                "✅ Собеседник найден! Общайтесь анонимно.\n"
+                "Для открытия меню нажмите кнопку '📱 Меню'",
+                reply_markup=get_menu_keyboard()
             )
             return
 
@@ -224,7 +250,7 @@ async def find_partner(message: Message):
         waiting_users.append(user_id)
         logger.info(
             f"Пользователь {get_user_log_info(user_id)} добавлен в очередь. Размер очереди: {len(waiting_users)}")
-        await message.reply("🔍 Ищем собеседника... Ожидайте.")
+        await message.reply("🔍 Ищем собеседника... Ожидайте.", reply_markup=get_menu_keyboard())
 
 
 @dp.message(Command("stop"))
@@ -233,15 +259,15 @@ async def stop_chat_handler(message: Message):
     await save_user_info(user)
     user_id = user.id
     logger.info(f"Пользователь {get_user_log_info(user_id)} хочет выйти из чата")
-    await stop_chat(user_id)
+
     await message.answer(
-        "🗑️ Чат завершён. Для нового общения используйте /find",
-        reply_markup=get_main_keyboard()
+        "⚠️ Вы уверены, что хотите завершить чат?",
+        reply_markup=get_confirm_keyboard("stop")
     )
 
 
 @dp.message(Command("next"))
-async def confirm_next(message: Message):
+async def next_partner(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
@@ -251,24 +277,23 @@ async def confirm_next(message: Message):
         return
 
     logger.info(f"Пользователь {get_user_log_info(user_id)} запросил подтверждение смены собеседника")
-    confirmations[user_id] = True  # Устанавливаем флаг ожидания подтверждения
-
     await message.answer(
         "⚠️ Вы уверены, что хотите сменить собеседника?",
-        reply_markup=get_confirm_keyboard()
+        reply_markup=get_confirm_keyboard("next")
     )
 
 
-@dp.callback_query(lambda c: c.data in ["confirm_next_yes", "confirm_next_no"])
-async def process_confirmation(callback_query):
+@dp.callback_query(lambda c: c.data.startswith("confirm_"))
+async def process_confirmation(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
+    action = callback_query.data.split("_")[1]
+    response = callback_query.data.split("_")[2]
+
     await bot.answer_callback_query(callback_query.id)
 
-    if callback_query.data == "confirm_next_yes":
-        if user_id in confirmations:
-            del confirmations[user_id]
+    if response == "yes":
+        if action == "next":
             logger.info(f"Пользователь {get_user_log_info(user_id)} подтвердил смену собеседника")
-
             partner_id = await stop_chat(user_id, initiator=True)
 
             if user_id not in waiting_users:
@@ -277,17 +302,24 @@ async def process_confirmation(callback_query):
             await bot.send_message(
                 user_id,
                 "🔄 Ищем нового собеседника...",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             await find_partner(Message(chat=callback_query.message.chat, from_user=callback_query.from_user))
+
+        elif action == "stop":
+            logger.info(f"Пользователь {get_user_log_info(user_id)} подтвердил выход из чата")
+            await stop_chat(user_id)
+            await bot.send_message(
+                user_id,
+                "🗑️ Чат завершён. Для нового общения используйте /find",
+                reply_markup=get_menu_keyboard()
+            )
     else:
-        if user_id in confirmations:
-            del confirmations[user_id]
-        logger.info(f"Пользователь {get_user_log_info(user_id)} отменил смену собеседника")
+        logger.info(f"Пользователь {get_user_log_info(user_id)} отменил действие: {action}")
         await bot.send_message(
             user_id,
-            "✅ Остаемся с текущим собеседником.",
-            reply_markup=get_main_keyboard()
+            f"❌ Действие отменено. Продолжаем общение.",
+            reply_markup=get_menu_keyboard()
         )
 
 
@@ -304,7 +336,7 @@ async def handle_photo(message: Message):
                 partner_id,
                 message.photo[-1].file_id,
                 caption="📷 Фото от собеседника",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             logger.info(f"Фото от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -313,7 +345,7 @@ async def handle_photo(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_menu_keyboard()
         )
 
 
@@ -330,7 +362,7 @@ async def handle_voice(message: Message):
                 partner_id,
                 message.voice.file_id,
                 caption="🎤 Голосовое от собеседника",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             logger.info(f"Голосовое от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -339,7 +371,7 @@ async def handle_voice(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_menu_keyboard()
         )
 
 
@@ -353,7 +385,7 @@ async def handle_video_note(message: Message):
         await message.answer(
             "🔒 Отправка видеосообщений доступна только VIP-пользователям\n"
             "Используйте команду /vip для получения информации",
-            reply_markup=get_vip_keyboard()
+            reply_markup=get_menu_keyboard()
         )
         return
 
@@ -363,7 +395,7 @@ async def handle_video_note(message: Message):
             await bot.send_video_note(
                 partner_id,
                 message.video_note.file_id,
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             logger.info(f"Видеосообщение от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -372,7 +404,7 @@ async def handle_video_note(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_menu_keyboard()
         )
 
 
@@ -386,7 +418,7 @@ async def handle_video(message: Message):
         await message.answer(
             "🔒 Отправка обычных видео доступна только VIP-пользователям\n"
             "Используйте команду /vip для получения информации",
-            reply_markup=get_vip_keyboard()
+            reply_markup=get_menu_keyboard()
         )
         return
 
@@ -397,7 +429,7 @@ async def handle_video(message: Message):
                 partner_id,
                 message.video.file_id,
                 caption="🎥 Видео от собеседника",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             logger.info(f"Видео от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -406,7 +438,7 @@ async def handle_video(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_menu_keyboard()
         )
 
 
@@ -416,6 +448,10 @@ async def send_message(message: Message):
     await save_user_info(user)
     user_id = user.id
     text = message.text
+
+    # Если это не команда меню и меню не открыто - игнорируем
+    if text != "📱 Меню" and not menu_states.get(user_id, False) and user_id in active_users:
+        return
 
     # Проверка на ссылки
     if URL_PATTERN.search(text):
@@ -427,12 +463,22 @@ async def send_message(message: Message):
     logger.info(f"Сообщение от {get_user_log_info(user_id)}: {log_text}")
 
     if user_id in active_users:
+        if text == "📱 Меню":
+            menu_states[user_id] = True
+            if user_id in vip_users:
+                await message.answer("Меню:", reply_markup=get_vip_keyboard())
+            else:
+                await message.answer("Меню:", reply_markup=get_main_keyboard())
+            return
+
+        menu_states[user_id] = False  # Закрываем меню после любого действия
+
         partner_id = active_users[user_id]["partner_id"]
         try:
             await bot.send_message(
                 partner_id,
                 f"👤: {text}",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_menu_keyboard()
             )
             logger.debug(f"Сообщение переслано {get_user_log_info(user_id)} → {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -441,7 +487,7 @@ async def send_message(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_menu_keyboard()
         )
 
 
