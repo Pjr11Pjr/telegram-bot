@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import re
+import signal
 
 # Настройка логирования
 logging.basicConfig(
@@ -45,7 +46,7 @@ menu_states = {}  # {user_id: bool} - открыто ли меню у польз
 
 
 def get_menu_keyboard():
-    """Клавиатура меню"""
+    """Клавиатура с кнопкой меню"""
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text="📱 Меню"))
     return builder.as_markup(resize_keyboard=True)
@@ -63,7 +64,7 @@ def get_main_keyboard():
 
 
 def get_vip_keyboard():
-    """Клавиатура с выделенной VIP-кнопкой"""
+    """VIP клавиатура"""
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text="/find"))
     builder.add(KeyboardButton(text="/stop"))
@@ -74,7 +75,7 @@ def get_vip_keyboard():
 
 
 def get_confirm_keyboard(action: str):
-    """Инлайн-клавиатура для подтверждения действий"""
+    """Клавиатура подтверждения"""
     builder = InlineKeyboardBuilder()
     builder.add(InlineKeyboardButton(
         text="✅ Да",
@@ -87,6 +88,7 @@ def get_confirm_keyboard(action: str):
     return builder.as_markup()
 
 
+# Загрузка токена
 load_dotenv()
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -102,7 +104,7 @@ dp = Dispatcher()
 
 
 async def save_user_info(user):
-    """Сохраняет информацию о пользователе в кеш"""
+    """Сохранение информации о пользователе"""
     user_data_cache[user.id] = {
         "username": user.username,
         "first_name": user.first_name,
@@ -111,7 +113,7 @@ async def save_user_info(user):
 
 
 def get_user_log_info(user_id):
-    """Возвращает строку для логирования с информацией о пользователе"""
+    """Форматирование информации о пользователе для логов"""
     user = user_data_cache.get(user_id, {})
     username = f"@{user.get('username')}" if user.get('username') else "без username"
     first_name = user.get('first_name', 'неизвестно')
@@ -120,19 +122,22 @@ def get_user_log_info(user_id):
 
 
 async def stop_chat(user_id: int, initiator: bool = True):
-    """Общая функция для завершения чата"""
+    """Завершение чата"""
     if user_id in active_users:
         partner_info = active_users[user_id]
         partner_id = partner_info["partner_id"]
 
+        # Удаляем информацию о чате
         del active_users[user_id]
-        del active_users[partner_id]
+        if partner_id in active_users:
+            del active_users[partner_id]
 
         # Закрываем меню у обоих пользователей
         menu_states.pop(user_id, None)
         menu_states.pop(partner_id, None)
 
         logger.info(f"Чат между {get_user_log_info(user_id)} и {get_user_log_info(partner_id)} завершен")
+
         if initiator:
             await bot.send_message(
                 user_id,
@@ -260,6 +265,10 @@ async def stop_chat_handler(message: Message):
     user_id = user.id
     logger.info(f"Пользователь {get_user_log_info(user_id)} хочет выйти из чата")
 
+    if user_id not in active_users:
+        await message.answer("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        return
+
     await message.answer(
         "⚠️ Вы уверены, что хотите завершить чат?",
         reply_markup=get_confirm_keyboard("stop")
@@ -323,6 +332,52 @@ async def process_confirmation(callback_query: CallbackQuery):
         )
 
 
+async def forward_message(user_id: int, partner_id: int, content: str, content_type: str):
+    """Универсальная функция пересылки сообщений"""
+    try:
+        if content_type == "text":
+            await bot.send_message(
+                partner_id,
+                f"👤: {content}",
+                reply_markup=get_menu_keyboard()
+            )
+        elif content_type == "photo":
+            await bot.send_photo(
+                partner_id,
+                content,
+                caption="📷 Фото от собеседника",
+                reply_markup=get_menu_keyboard()
+            )
+        elif content_type == "voice":
+            await bot.send_voice(
+                partner_id,
+                content,
+                caption="🎤 Голосовое от собеседника",
+                reply_markup=get_menu_keyboard()
+            )
+        elif content_type == "video_note":
+            await bot.send_video_note(
+                partner_id,
+                content,
+                reply_markup=get_menu_keyboard()
+            )
+        elif content_type == "video":
+            await bot.send_video(
+                partner_id,
+                content,
+                caption="🎥 Видео от собеседника",
+                reply_markup=get_menu_keyboard()
+            )
+
+        logger.info(
+            f"{content_type.capitalize()} от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка отправки {content_type}: {e}")
+        await stop_chat(user_id, initiator=False)
+        return False
+
+
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     user = message.from_user
@@ -331,17 +386,7 @@ async def handle_photo(message: Message):
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
-        try:
-            await bot.send_photo(
-                partner_id,
-                message.photo[-1].file_id,
-                caption="📷 Фото от собеседника",
-                reply_markup=get_menu_keyboard()
-            )
-            logger.info(f"Фото от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            await stop_chat(user_id, initiator=False)
+        await forward_message(user_id, partner_id, message.photo[-1].file_id, "photo")
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
@@ -357,17 +402,7 @@ async def handle_voice(message: Message):
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
-        try:
-            await bot.send_voice(
-                partner_id,
-                message.voice.file_id,
-                caption="🎤 Голосовое от собеседника",
-                reply_markup=get_menu_keyboard()
-            )
-            logger.info(f"Голосовое от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки голосового: {e}")
-            await stop_chat(user_id, initiator=False)
+        await forward_message(user_id, partner_id, message.voice.file_id, "voice")
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
@@ -391,16 +426,7 @@ async def handle_video_note(message: Message):
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
-        try:
-            await bot.send_video_note(
-                partner_id,
-                message.video_note.file_id,
-                reply_markup=get_menu_keyboard()
-            )
-            logger.info(f"Видеосообщение от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки видеосообщения: {e}")
-            await stop_chat(user_id, initiator=False)
+        await forward_message(user_id, partner_id, message.video_note.file_id, "video_note")
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
@@ -424,17 +450,7 @@ async def handle_video(message: Message):
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
-        try:
-            await bot.send_video(
-                partner_id,
-                message.video.file_id,
-                caption="🎥 Видео от собеседника",
-                reply_markup=get_menu_keyboard()
-            )
-            logger.info(f"Видео от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки видео: {e}")
-            await stop_chat(user_id, initiator=False)
+        await forward_message(user_id, partner_id, message.video.file_id, "video")
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
@@ -449,8 +465,13 @@ async def send_message(message: Message):
     user_id = user.id
     text = message.text
 
-    # Если это не команда меню и меню не открыто - игнорируем
-    if text != "📱 Меню" and not menu_states.get(user_id, False) and user_id in active_users:
+    # Обработка команды меню
+    if text == "📱 Меню":
+        menu_states[user_id] = True
+        if user_id in vip_users:
+            await message.answer("Меню:", reply_markup=get_vip_keyboard())
+        else:
+            await message.answer("Меню:", reply_markup=get_main_keyboard())
         return
 
     # Проверка на ссылки
@@ -463,27 +484,8 @@ async def send_message(message: Message):
     logger.info(f"Сообщение от {get_user_log_info(user_id)}: {log_text}")
 
     if user_id in active_users:
-        if text == "📱 Меню":
-            menu_states[user_id] = True
-            if user_id in vip_users:
-                await message.answer("Меню:", reply_markup=get_vip_keyboard())
-            else:
-                await message.answer("Меню:", reply_markup=get_main_keyboard())
-            return
-
-        menu_states[user_id] = False  # Закрываем меню после любого действия
-
         partner_id = active_users[user_id]["partner_id"]
-        try:
-            await bot.send_message(
-                partner_id,
-                f"👤: {text}",
-                reply_markup=get_menu_keyboard()
-            )
-            logger.debug(f"Сообщение переслано {get_user_log_info(user_id)} → {get_user_log_info(partner_id)}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
-            await stop_chat(user_id, initiator=False)
+        await forward_message(user_id, partner_id, text, "text")
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
@@ -491,16 +493,39 @@ async def send_message(message: Message):
         )
 
 
+async def on_shutdown():
+    """Обработчик завершения работы"""
+    logger.info("Завершение работы бота...")
+    # Закрываем все активные чаты
+    for user_id in list(active_users.keys()):
+        await stop_chat(user_id, initiator=False)
+    await bot.session.close()
+
+
 async def main():
+    # Обработка сигналов завершения
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(
+        signal.SIGTERM,
+        lambda: asyncio.create_task(on_shutdown())
+    )
+
     restart_delay = 5
+    max_restart_delay = 60
     while True:
         try:
             logger.info("Запуск бота...")
+            await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, close_bot_session=True)
         except Exception as e:
             logger.error(f"Ошибка: {e}. Перезапуск через {restart_delay} сек...")
             await asyncio.sleep(restart_delay)
-            restart_delay = min(restart_delay * 2, 60)
+            restart_delay = min(restart_delay * 1.5, max_restart_delay)
+            # Принудительно закрываем сессию перед перезапуском
+            try:
+                await bot.session.close()
+            except:
+                pass
 
 
 if __name__ == '__main__':
