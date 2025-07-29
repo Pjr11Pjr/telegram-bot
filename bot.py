@@ -8,10 +8,12 @@ from aiogram.types import (
     ReplyKeyboardRemove,
     PhotoSize,
     Voice,
-    VideoNote
+    VideoNote,
+    Video
 )
 from aiogram.client.default import DefaultBotProperties
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from dotenv import load_dotenv
 import os
 import asyncio
@@ -34,6 +36,9 @@ vip_users = set()
 # Регулярное выражение для обнаружения ссылок
 URL_PATTERN = re.compile(r'https?://\S+')
 
+# Словарь для хранения состояний подтверждения
+confirmations = {}
+
 
 def get_main_keyboard():
     """Клавиатура для основного меню"""
@@ -55,6 +60,20 @@ def get_vip_keyboard():
     builder.add(KeyboardButton(text="/vip"))
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
+
+
+def get_confirm_keyboard():
+    """Инлайн-клавиатура для подтверждения действий"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="✅ Да",
+        callback_data="confirm_next_yes"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="❌ Нет",
+        callback_data="confirm_next_no"
+    ))
+    return builder.as_markup()
 
 
 load_dotenv()
@@ -143,13 +162,14 @@ async def vip_info(message: Message):
 
     if user_id in vip_users:
         await message.answer(
-            "🎉 У вас уже есть VIP-статус!\n\nВы можете отправлять видеосообщения",
+            "🎉 У вас уже есть VIP-статус!\n\nВы можете отправлять видеосообщения и обычные видео",
             reply_markup=get_vip_keyboard()
         )
     else:
         await message.answer(
             "🔒 VIP-статус открывает дополнительные возможности:\n"
             "• Отправка видеосообщений (кружков)\n"
+            "• Отправка обычных видео\n"
             "• Приоритет в поиске собеседника\n\n"
             "💰 Стоимость: 299 руб./мес\n"
             "Для покупки напишите @admin",
@@ -221,19 +241,54 @@ async def stop_chat_handler(message: Message):
 
 
 @dp.message(Command("next"))
-async def next_partner(message: Message):
+async def confirm_next(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
-    logger.info(f"Пользователь {get_user_log_info(user_id)} запросил нового собеседника")
 
-    partner_id = await stop_chat(user_id)
+    if user_id not in active_users:
+        await message.answer("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        return
 
-    if user_id not in waiting_users:
-        waiting_users.append(user_id)
+    logger.info(f"Пользователь {get_user_log_info(user_id)} запросил подтверждение смены собеседника")
+    confirmations[user_id] = True  # Устанавливаем флаг ожидания подтверждения
 
-    await message.answer("🔄 Ищем нового собеседника...")
-    await find_partner(message)
+    await message.answer(
+        "⚠️ Вы уверены, что хотите сменить собеседника?",
+        reply_markup=get_confirm_keyboard()
+    )
+
+
+@dp.callback_query(lambda c: c.data in ["confirm_next_yes", "confirm_next_no"])
+async def process_confirmation(callback_query):
+    user_id = callback_query.from_user.id
+    await bot.answer_callback_query(callback_query.id)
+
+    if callback_query.data == "confirm_next_yes":
+        if user_id in confirmations:
+            del confirmations[user_id]
+            logger.info(f"Пользователь {get_user_log_info(user_id)} подтвердил смену собеседника")
+
+            partner_id = await stop_chat(user_id, initiator=True)
+
+            if user_id not in waiting_users:
+                waiting_users.append(user_id)
+
+            await bot.send_message(
+                user_id,
+                "🔄 Ищем нового собеседника...",
+                reply_markup=get_main_keyboard()
+            )
+            await find_partner(Message(chat=callback_query.message.chat, from_user=callback_query.from_user))
+    else:
+        if user_id in confirmations:
+            del confirmations[user_id]
+        logger.info(f"Пользователь {get_user_log_info(user_id)} отменил смену собеседника")
+        await bot.send_message(
+            user_id,
+            "✅ Остаемся с текущим собеседником.",
+            reply_markup=get_main_keyboard()
+        )
 
 
 @dp.message(F.photo)
@@ -313,6 +368,40 @@ async def handle_video_note(message: Message):
             logger.info(f"Видеосообщение от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
             logger.error(f"Ошибка отправки видеосообщения: {e}")
+            await stop_chat(user_id, initiator=False)
+    else:
+        await message.reply(
+            "❌ Вы не в чате. Используйте /find для поиска собеседника.",
+            reply_markup=get_main_keyboard()
+        )
+
+
+@dp.message(F.video)
+async def handle_video(message: Message):
+    user = message.from_user
+    await save_user_info(user)
+    user_id = user.id
+
+    if user_id not in vip_users:
+        await message.answer(
+            "🔒 Отправка обычных видео доступна только VIP-пользователям\n"
+            "Используйте команду /vip для получения информации",
+            reply_markup=get_vip_keyboard()
+        )
+        return
+
+    if user_id in active_users:
+        partner_id = active_users[user_id]["partner_id"]
+        try:
+            await bot.send_video(
+                partner_id,
+                message.video.file_id,
+                caption="🎥 Видео от собеседника",
+                reply_markup=get_main_keyboard()
+            )
+            logger.info(f"Видео от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
+        except Exception as e:
+            logger.error(f"Ошибка отправки видео: {e}")
             await stop_chat(user_id, initiator=False)
     else:
         await message.reply(
