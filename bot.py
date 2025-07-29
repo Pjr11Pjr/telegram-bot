@@ -11,9 +11,11 @@ from aiogram.types import (
     VideoNote
 )
 from aiogram.client.default import DefaultBotProperties
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from dotenv import load_dotenv
 import os
 import asyncio
+import re
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,18 +31,30 @@ logger = logging.getLogger(__name__)
 # VIP пользователи (в реальном боте нужно хранить в БД)
 vip_users = set()
 
+# Регулярное выражение для обнаружения ссылок
+URL_PATTERN = re.compile(r'https?://\S+')
 
-# Создаем клавиатуру команд
-def get_command_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="/find"), KeyboardButton(text="/stop"), KeyboardButton(text="/next")],
-            [KeyboardButton(text="🎤 Голосовое"), KeyboardButton(text="📷 Фото")],
-            [KeyboardButton(text="🎥 Видео (VIP)"), KeyboardButton(text="/vip")]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
+
+def get_main_keyboard():
+    """Клавиатура для основного меню"""
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="/find"))
+    builder.add(KeyboardButton(text="/stop"))
+    builder.add(KeyboardButton(text="/next"))
+    builder.add(KeyboardButton(text="/vip"))
+    builder.adjust(2, 2)
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_vip_keyboard():
+    """Клавиатура с выделенной VIP-кнопкой"""
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="/find"))
+    builder.add(KeyboardButton(text="/stop"))
+    builder.add(KeyboardButton(text="/next"))
+    builder.add(KeyboardButton(text="/vip"))
+    builder.adjust(2, 2)
+    return builder.as_markup(resize_keyboard=True)
 
 
 load_dotenv()
@@ -94,12 +108,12 @@ async def stop_chat(user_id: int, initiator: bool = True):
             await bot.send_message(
                 user_id,
                 "❌ Чат завершён. Ищем нового собеседника...",
-                reply_markup=get_command_keyboard()
+                reply_markup=get_main_keyboard()
             )
             await bot.send_message(
                 partner_id,
                 "❌ Собеседник покинул чат. Используйте /find для нового поиска.",
-                reply_markup=get_command_keyboard()
+                reply_markup=get_main_keyboard()
             )
         return partner_id
     return None
@@ -116,9 +130,8 @@ async def start(message: Message):
         "/find - найти собеседника\n"
         "/stop - выйти из чата\n"
         "/next - сменить собеседника\n"
-        "/vip - информация о VIP-статусе\n"
-        "/health - проверка работы бота",
-        reply_markup=get_command_keyboard()
+        "/vip - информация о VIP-статусе",
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -129,7 +142,10 @@ async def vip_info(message: Message):
     user_id = user.id
 
     if user_id in vip_users:
-        await message.answer("🎉 У вас уже есть VIP-статус!\n\nВы можете отправлять:")
+        await message.answer(
+            "🎉 У вас уже есть VIP-статус!\n\nВы можете отправлять видеосообщения",
+            reply_markup=get_vip_keyboard()
+        )
     else:
         await message.answer(
             "🔒 VIP-статус открывает дополнительные возможности:\n"
@@ -137,7 +153,7 @@ async def vip_info(message: Message):
             "• Приоритет в поиске собеседника\n\n"
             "💰 Стоимость: 299 руб./мес\n"
             "Для покупки напишите @admin",
-            reply_markup=get_command_keyboard()
+            reply_markup=get_vip_keyboard()
         )
 
 
@@ -145,29 +161,6 @@ async def vip_info(message: Message):
 async def health_check(message: Message):
     await message.answer("✅ Бот активен и работает")
     logger.info(f"Health check от {get_user_log_info(message.from_user.id)}")
-
-
-@dp.message(F.text == "🎤 Голосовое")
-async def request_voice(message: Message):
-    await message.answer("🎤 Запишите и отправьте голосовое сообщение")
-
-
-@dp.message(F.text == "📷 Фото")
-async def request_photo(message: Message):
-    await message.answer("📷 Отправьте фото")
-
-
-@dp.message(F.text == "🎥 Видео (VIP)")
-async def request_video_note(message: Message):
-    user = message.from_user
-    if user.id in vip_users:
-        await message.answer("🎥 Запишите и отправьте видеосообщение (кружок)")
-    else:
-        await message.answer(
-            "🔒 Эта функция доступна только для VIP-пользователей\n"
-            "Используйте команду /vip для получения информации",
-            reply_markup=get_command_keyboard()
-        )
 
 
 @dp.message(Command("find"))
@@ -181,6 +174,7 @@ async def find_partner(message: Message):
         await message.reply("⚠️ Вы уже в чате! Используйте /stop чтобы выйти.")
         return
 
+    # Проверяем очередь на наличие партнера
     for i, partner_id in enumerate(waiting_users):
         if partner_id != user_id:
             waiting_users.pop(i)
@@ -197,12 +191,12 @@ async def find_partner(message: Message):
             await bot.send_message(
                 user_id,
                 "✅ Собеседник найден! Общайтесь анонимно.",
-                reply_markup=ReplyKeyboardRemove()
+                reply_markup=get_main_keyboard()
             )
             await bot.send_message(
                 partner_id,
                 "✅ Собеседник найден! Общайтесь анонимно.",
-                reply_markup=ReplyKeyboardRemove()
+                reply_markup=get_main_keyboard()
             )
             return
 
@@ -222,7 +216,7 @@ async def stop_chat_handler(message: Message):
     await stop_chat(user_id)
     await message.answer(
         "🗑️ Чат завершён. Для нового общения используйте /find",
-        reply_markup=get_command_keyboard()
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -247,22 +241,25 @@ async def handle_photo(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
-    photo = message.photo[-1]  # Берем самое качественное фото
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
         try:
             await bot.send_photo(
                 partner_id,
-                photo.file_id,
-                caption="📷 Фото от собеседника"
+                message.photo[-1].file_id,
+                caption="📷 Фото от собеседника",
+                reply_markup=get_main_keyboard()
             )
             logger.info(f"Фото от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
             logger.error(f"Ошибка отправки фото: {e}")
             await stop_chat(user_id, initiator=False)
     else:
-        await message.reply("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        await message.reply(
+            "❌ Вы не в чате. Используйте /find для поиска собеседника.",
+            reply_markup=get_main_keyboard()
+        )
 
 
 @dp.message(F.voice)
@@ -277,14 +274,18 @@ async def handle_voice(message: Message):
             await bot.send_voice(
                 partner_id,
                 message.voice.file_id,
-                caption="🎤 Голосовое от собеседника"
+                caption="🎤 Голосовое от собеседника",
+                reply_markup=get_main_keyboard()
             )
             logger.info(f"Голосовое от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
             logger.error(f"Ошибка отправки голосового: {e}")
             await stop_chat(user_id, initiator=False)
     else:
-        await message.reply("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        await message.reply(
+            "❌ Вы не в чате. Используйте /find для поиска собеседника.",
+            reply_markup=get_main_keyboard()
+        )
 
 
 @dp.message(F.video_note)
@@ -297,7 +298,7 @@ async def handle_video_note(message: Message):
         await message.answer(
             "🔒 Отправка видеосообщений доступна только VIP-пользователям\n"
             "Используйте команду /vip для получения информации",
-            reply_markup=get_command_keyboard()
+            reply_markup=get_vip_keyboard()
         )
         return
 
@@ -306,14 +307,18 @@ async def handle_video_note(message: Message):
         try:
             await bot.send_video_note(
                 partner_id,
-                message.video_note.file_id
+                message.video_note.file_id,
+                reply_markup=get_main_keyboard()
             )
             logger.info(f"Видеосообщение от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         except Exception as e:
             logger.error(f"Ошибка отправки видеосообщения: {e}")
             await stop_chat(user_id, initiator=False)
     else:
-        await message.reply("❌ Вы не в чате. Используйте /find для поиска собеседника.")
+        await message.reply(
+            "❌ Вы не в чате. Используйте /find для поиска собеседника.",
+            reply_markup=get_main_keyboard()
+        )
 
 
 @dp.message(F.text)
@@ -322,6 +327,12 @@ async def send_message(message: Message):
     await save_user_info(user)
     user_id = user.id
     text = message.text
+
+    # Проверка на ссылки
+    if URL_PATTERN.search(text):
+        await message.answer("⚠️ Отправка ссылок запрещена")
+        logger.warning(f"Попытка отправить ссылку от {get_user_log_info(user_id)}")
+        return
 
     log_text = text if len(text) <= 50 else f"{text[:50]}..."
     logger.info(f"Сообщение от {get_user_log_info(user_id)}: {log_text}")
@@ -332,7 +343,7 @@ async def send_message(message: Message):
             await bot.send_message(
                 partner_id,
                 f"👤: {text}",
-                reply_markup=ReplyKeyboardRemove()
+                reply_markup=get_main_keyboard()
             )
             logger.debug(f"Сообщение переслано {get_user_log_info(user_id)} → {get_user_log_info(partner_id)}")
         except Exception as e:
@@ -341,7 +352,7 @@ async def send_message(message: Message):
     else:
         await message.reply(
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
-            reply_markup=get_command_keyboard()
+            reply_markup=get_main_keyboard()
         )
 
 
