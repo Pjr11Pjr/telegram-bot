@@ -202,24 +202,6 @@ async def stop_chat(user_id: int, initiator: bool = True):
     return None
 
 
-@dp.message(Command("start"))
-async def start(message: Message):
-    user = message.from_user
-    await save_user_info(user)
-    logger.info(f"Пользователь {get_user_log_info(user.id)} запустил бота")
-    await message.reply(
-        "👋 Привет! Это анонимный чат-бот.\n"
-        "Доступные команды:\n"
-        "/find - найти собеседника\n"
-        "/stop - выйти из чата\n"
-        "/next - сменить собеседника\n"
-        "/vip - информация о VIP-статусе\n"
-        "/duo - создать ссылку для диалога\n\n"
-        "Для открытия меню нажмите кнопку '📱 Меню'",
-        reply_markup=get_menu_keyboard()
-    )
-
-
 @dp.message(Command("duo"))
 async def create_duo_link(message: Message):
     user = message.from_user
@@ -628,7 +610,19 @@ async def handle_start_with_args(message: Message):
             reply_markup=get_menu_keyboard()
         )
     else:
-        await start(message)
+        await message.answer(
+            "👋 Привет! Это анонимный чат-бот.\n"
+            "Доступные команды:\n"
+            "/find - найти собеседника\n"
+            "/stop - выйти из чата\n"
+            "/next - сменить собеседника\n"
+            "/vip - информация о VIP-статусе\n"
+            "/duo - создать ссылку для диалога\n\n"
+            "Для открытия меню нажмите кнопку '📱 Меню'",
+            reply_markup=get_menu_keyboard()
+        )
+        await save_user_info(message.from_user)
+        logger.info(f"Пользователь {get_user_log_info(message.from_user.id)} запустил бота")
 
 
 @dp.message()
