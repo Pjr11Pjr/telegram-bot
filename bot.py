@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# VIP пользователи (в реальном боте нужно хранить в БД)
+# VIP пользователи
 vip_users = set()
 
 # Регулярное выражение для обнаружения ссылок
@@ -217,7 +217,10 @@ async def find_partner(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
-    logger.info(f"Пользователь {get_user_log_info(user_id)} ищет собеседника")
+
+    if user_id in waiting_users and waiting_users[0] == user_id:
+        await message.answer("Вы уже первый в очереди на поиск")
+        return
 
     if user_id in active_users:
         await message.reply("⚠️ Вы уже в чате! Используйте /stop чтобы выйти.")
@@ -263,12 +266,12 @@ async def stop_chat_handler(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
-    logger.info(f"Пользователь {get_user_log_info(user_id)} хочет выйти из чата")
 
     if user_id not in active_users:
         await message.answer("❌ Вы не в чате. Используйте /find для поиска собеседника.")
         return
 
+    logger.info(f"Пользователь {get_user_log_info(user_id)} хочет выйти из чата")
     await message.answer(
         "⚠️ Вы уверены, что хотите завершить чат?",
         reply_markup=get_confirm_keyboard("stop")
@@ -313,7 +316,16 @@ async def process_confirmation(callback_query: CallbackQuery):
                 "🔄 Ищем нового собеседника...",
                 reply_markup=get_menu_keyboard()
             )
-            await find_partner(Message(chat=callback_query.message.chat, from_user=callback_query.from_user))
+
+            # Создаем fake message для find_partner
+            fake_message = Message(
+                message_id=callback_query.message.message_id,
+                date=callback_query.message.date,
+                chat=callback_query.message.chat,
+                from_user=callback_query.from_user,
+                text="/find"
+            )
+            await find_partner(fake_message)
 
         elif action == "stop":
             logger.info(f"Пользователь {get_user_log_info(user_id)} подтвердил выход из чата")
@@ -373,7 +385,7 @@ async def forward_message(user_id: int, partner_id: int, content: str, content_t
             f"{content_type.capitalize()} от {get_user_log_info(user_id)} отправлено {get_user_log_info(partner_id)}")
         return True
     except Exception as e:
-        logger.error(f"Ошибка отправки {content_type}: {e}")
+        logger.error(f"Ошибка отправки {content_type}: {e}", exc_info=True)
         await stop_chat(user_id, initiator=False)
         return False
 
@@ -493,6 +505,12 @@ async def send_message(message: Message):
         )
 
 
+@dp.message()
+async def unhandled_message(message: Message):
+    """Обработчик неучтенных сообщений"""
+    logger.debug(f"Необработанное сообщение типа: {message.content_type}")
+
+
 async def on_shutdown():
     """Обработчик завершения работы"""
     logger.info("Завершение работы бота...")
@@ -518,7 +536,7 @@ async def main():
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, close_bot_session=True)
         except Exception as e:
-            logger.error(f"Ошибка: {e}. Перезапуск через {restart_delay} сек...")
+            logger.error(f"Ошибка: {e}. Перезапуск через {restart_delay} сек...", exc_info=True)
             await asyncio.sleep(restart_delay)
             restart_delay = min(restart_delay * 1.5, max_restart_delay)
             # Принудительно закрываем сессию перед перезапуском
@@ -534,4 +552,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Бот остановлен по запросу пользователя")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
