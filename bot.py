@@ -1,4 +1,6 @@
 import logging
+from flask import Flask
+from threading import Thread
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -14,6 +16,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+from aiogram.utils.executor import start_webhook
 from dotenv import load_dotenv
 import os
 import asyncio
@@ -37,6 +41,15 @@ logger = logging.getLogger(__name__)
 ADMIN_ID = 7618960051  # ID администратора
 VIP_PRICE = "299 руб./мес"  # Стоимость VIP статуса
 BOT_USERNAME = "AnonimChatByXBot"  # Юзернейм бота без @
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', '')}{WEBHOOK_PATH}"
+
+# Инициализация Flask
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health_check():
+    return "Bot is running", 200
 
 # Хранилища данных
 vip_users: Set[int] = set()
@@ -548,29 +561,46 @@ async def unhandled_message(message: Message) -> None:
     logger.debug(f"Необработанное сообщение типа: {message.content_type}")
 
 
-async def on_shutdown() -> None:
+async def on_startup(dp: Dispatcher) -> None:
+    """Обработчик запуска бота в режиме webhook"""
+    if os.getenv("USE_WEBHOOK", "").lower() == "true":
+        await bot.set_webhook(WEBHOOK_URL)
+        logger.info("Webhook установлен")
+
+
+async def on_shutdown(dp: Dispatcher) -> None:
     """Обработчик завершения работы"""
     logger.info("Завершение работы бота...")
+    if os.getenv("USE_WEBHOOK", "").lower() == "true":
+        await bot.delete_webhook()
     # Закрываем все активные чаты
     for user_id in list(active_users.keys()):
         await stop_chat(user_id, initiator=False)
-    await bot.session.close()
+    await dp.storage.close()
+    await dp.storage.wait_closed()
+    logger.info("Бот выключен")
 
 
-async def main() -> None:
-    """Основная функция запуска бота"""
+def run_flask():
+    """Запуск Flask сервера для health checks"""
+    port = int(os.getenv("PORT", 5000))
+    flask_app.run(host='0.0.0.0', port=port)
+
+
+async def polling_main() -> None:
+    """Основная функция запуска бота в режиме polling"""
     # Обработка сигналов завершения
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(
         signal.SIGTERM,
-        lambda: asyncio.create_task(on_shutdown())
+        lambda: asyncio.create_task(on_shutdown(dp))
     )
 
     restart_delay = 5
     max_restart_delay = 60
     while True:
         try:
-            logger.info("Запуск бота...")
+            logger.info("Запуск бота в режиме polling...")
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, close_bot_session=True)
         except Exception as e:
@@ -583,9 +613,31 @@ async def main() -> None:
                 pass
 
 
+def webhook_main() -> None:
+    """Основная функция запуска бота в режиме webhook"""
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host='0.0.0.0',
+        port=int(os.getenv("WEBHOOK_PORT", 3000))
+    )
+
+
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        if os.getenv("USE_WEBHOOK", "").lower() == "true":
+            logger.info("Запуск в режиме webhook")
+            webhook_main()
+        else:
+            logger.info("Запуск в режиме polling")
+            asyncio.run(polling_main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен по запросу пользователя")
     except Exception as e:

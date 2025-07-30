@@ -1,11 +1,19 @@
 services:
   - type: web
     name: telegram-bot
-    plan: free  # Бесплатный тариф
+    plan: free
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: |
+      python bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        value: ваш_токен_бота  # Замените на реальный токен
-    healthCheckPath: /health  # Для обхода проверки портов
+        value: 7704297977:AAG2_JbaZFMTcdPt4qGKxiUosUwB7Uud1AE
+      - key: PORT
+        value: 5000
+      - key: WEBHOOK_PORT
+        value: 3000
+      - key: RENDER_EXTERNAL_HOSTNAME
+        sync: false  # Автоматически подставится Render
+    healthCheckPath: /
