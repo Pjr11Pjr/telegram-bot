@@ -1,5 +1,5 @@
 aiogram==3.0.0b7
-aiohttp==3.9.0b0  # Первая версия с поддержкой Python 3.13
+aiohttp==3.9.0.post0  # Исправленная beta-версия
 python-dotenv==1.0.0
-flask==2.3.2
+flask==3.0.2
 requests==2.31.0
