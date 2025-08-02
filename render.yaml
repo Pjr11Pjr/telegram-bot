@@ -2,7 +2,11 @@ services:
   - type: web
     name: telegram-bot
     plan: free
-    dockerfilePath: Dockerfile  # Указываем путь к Dockerfile
+    buildCommand: |
+      pip install poetry
+      poetry install --no-dev
+    startCommand: |
+      poetry run python bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         value: 7704297977:AAG2_JbaZFMTcdPt4qGKxiUosUwB7Uud1AE
