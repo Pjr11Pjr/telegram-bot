@@ -1,9 +1,10 @@
-runtime: python-3.11.8
+python:
+  version: 3.11.8
+
 services:
   - type: web
     name: telegram-bot
     plan: free
-    runtime: python
     buildCommand: |
       pip install -r requirements.txt
     startCommand: |
@@ -16,5 +17,5 @@ services:
       - key: WEBHOOK_PORT
         value: 3000
       - key: RENDER_EXTERNAL_HOSTNAME
-        sync: false  # Автоматически подставится Render
+        sync: false
     healthCheckPath: /
