@@ -5,12 +5,12 @@ description = "Telegram Bot"
 authors = ["Your Name <your@email.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.13"  # Используем Python 3.13
-aiogram = "^3.3.1"  # Последняя стабильная версия
-aiohttp = "^3.9.3"  # Совместима с Python 3.13
-python-dotenv = "^1.0.0"
-flask = "^3.0.2"
-requests = "^2.31.0"
+python = "^3.13"
+aiogram = "3.21.0"  # Последняя стабильная версия
+aiohttp = "3.9.3"
+python-dotenv = "1.0.0"
+flask = "3.0.2"
+requests = "2.31.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
